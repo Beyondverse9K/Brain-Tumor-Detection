@@ -1,4 +1,4 @@
-%% Project Title: Brain Tumor Detection
+%% Project Title: Brain Tumor Detection with CNN
 
 while true
     choice = menu('Disease Detection', '....... Training........', '....... Testing......', '........ Close........');
@@ -26,66 +26,9 @@ while true
                 I = imread(filePath);
                 I = imresize(I, [512, 512]);  % Resize to 512x512
                 
-                % Data Augmentation
-                % Randomly apply transformations
-                if rand() > 0.5
-                    I = imrotate(I, randi([-15, 15]));  % Random rotation
-                end
-                if rand() > 0.5
-                    I = flip(I, 1);  % Random vertical flip
-                end
-                if rand() > 0.5
-                    I = flip(I, 2);  % Random horizontal flip
-                end
-                if rand() > 0.5
-                    % Randomly adjust brightness
-                    I = imadjust(I, [], [], rand() * 0.2 + 0.9); % Adjust brightness
-                end
-                if rand() > 0.5
-                    % Add Gaussian noise
-                    I = imnoise(I, 'gaussian', 0, 0.01); % Add Gaussian noise
-                end
-                
-                [I3, RGB] = createMask(I);
-                seg_img = RGB;
-                img = rgb2gray(seg_img);
-                
-                % Feature Extraction
-                % Calculate GLCM and extract features
-                glcms = graycomatrix(img);
-                stats = graycoprops(glcms, 'Contrast Correlation Energy Homogeneity');
-                Contrast = stats.Contrast;
-                Energy = stats.Energy;
-                Homogeneity = stats.Homogeneity;
-
-                % Additional statistical features
-                Mean = mean2(seg_img);
-                Variance = var(double(seg_img(:)));
-                Standard_Deviation = std2(seg_img);
-                Skewness = skewness(double(seg_img(:)));
-                Kurtosis = kurtosis(double(seg_img(:)));
-                
-                % GLCM features
-                Dissimilarity = sum(sum(glcms)) - sum(diag(glcms)); % Dissimilarity
-                
-                % Calculate correlation from GLCM
-                [rows, cols] = size(glcms);
-                mu_x = sum((1:rows) .* sum(glcms, 2)); % Mean of x
-                mu_y = sum((1:cols) .* sum(glcms, 1)); % Mean of y
-                sigma_x = sqrt(sum(((1:rows) - mu_x).^2 .* sum(glcms, 2))); % Standard deviation of x
-                sigma_y = sqrt(sum(((1:cols) - mu_y).^2 .* sum(glcms, 1))); % Standard deviation of y
-                
-                Correlation = (sum(sum((1:rows)' * (1:cols) .* glcms)) - mu_x * mu_y) / (sigma_x * sigma_y); % Correlation
-                ASM = sum(sum(glcms.^2)); % Angular Second Moment
-                Entropy = -sum(glcms(:) .* log(glcms(:) + eps)); % Entropy
-                Coarseness = 1 / (1 + mean2(glcms)); % Coarseness
-
-                % Combine features into a single row
-                ff = [Mean, Variance, Standard_Deviation, Skewness, Kurtosis, Contrast, Energy, ASM, Entropy, Homogeneity, Dissimilarity, Correlation, Coarseness];
-                Train_Feat = [Train_Feat; ff];  % Append to the feature matrix
-                
-                % Assign label based on the folder name
-                Train_Label = [Train_Label; i];  % Use the index as the label
+                % Store the image and label
+                Train_Feat(:,:,:,k) = I;  % Store image in 4D array
+                Train_Label(k) = i;  % Use the index as the label
             end
         end
 
@@ -97,161 +40,111 @@ while true
 
         disp('Training Complete');
 
-        %% Hyperparameter
-        % Define hyperparameters for the model
-        numTrees = 100;  % Number of trees for Random Forest
-        maxNumSplits = 2^maxDepth - 1;   % Maximum number of splits based on desired depth
-        minLeafSize = 5; % Minimum leaf size
+        %% Define Data Augmentation
+        augmenter = imageDataAugmenter( ...
+            'RandRotation', [-15, 15], ...  % Random rotation between -15 and 15 degrees
+            'RandXReflection', true, ...     % Random horizontal flip
+            'RandYReflection', true, ...     % Random vertical flip
+            'RandXTranslation', [-10, 10], ... % Random horizontal translation
+            'RandYTranslation', [-10, 10]);   % Random vertical translation
 
-        % Train the Random Forest model
-        model = TreeBagger(numTrees, Train_Feat, Train_Label, 'Method', 'classification', 'MaxNumSplits', maxNumSplits, 'MinLeafSize', minLeafSize);
+        % Create an augmented image datastore
+        augmentedTrainData = augmentedImageDatastore([512 512], Train_Feat, categorical(Train_Label), 'DataAugmentation', augmenter);
 
-        disp('Model training completed.');
+        %% Define CNN Architecture
+        layers = [
+            imageInputLayer([512 512 3])  % Input layer for 512x512 RGB images
+            
+            convolution2dLayer(5, 32, 'Padding', 'same')  % Convolutional layer
+            batchNormalizationLayer  % Batch normalization
+            reluLayer  % ReLU activation
+            
+            maxPooling2dLayer(2, 'Stride', 2)  % Max pooling layer
+            
+            convolution2dLayer(5, 64, 'Padding', 'same')  % Second convolutional layer
+            batchNormalizationLayer
+            reluLayer
+            
+            maxPooling2dLayer(2, 'Stride', 2)  % Second max pooling layer
+            
+            convolution2dLayer(5, 128, 'Padding', 'same')  % Third convolutional layer
+            batchNormalizationLayer
+            reluLayer
+            
+            maxPooling2dLayer(2, 'Stride', 2)  % Third max pooling layer
+            
+            fullyConnectedLayer(length(classLabels))  % Fully connected layer
+            softmaxLayer  % Softmax layer
+            classificationLayer  % Classification layer
+        ];
 
+        %% Training Options
+        options = trainingOptions('adam', ...
+            'MaxEpochs', 20, ...
+            'Shuffle', 'every-epoch', ...
+            'Verbose', false, ...
+            'Plots', 'training-progress');
+
+        %% Train the CNN
+        net = trainNetwork(augmentedTrainData, layers, options);
+
+        disp('CNN Model training completed.');
+
+    elseif choice == 2
+        %% Image Read for Testing
+        [filename, pathname] = uigetfile({'*.*'; '*. bmp'; '*.jpg'; '*.gif'}, 'Pick a Tumor Image File');
+        if isequal(filename, 0) || isequal(pathname, 0)
+            disp('User  canceled the operation.');
+            continue;  % Go back to the menu if no file is selected
+        end
         
-        % Calculate performance metrics on training data
-        predictions_train = predict(model, Train_Feat);
+        I = imread(fullfile(pathname, filename));
+        I = imresize(I, [512, 512]);  % Resize to match CNN input size
+        figure, imshow(I); title('Query Tumor Image');
+        
+        %% Classify the Image
+        predicted_class = classify(net, I);  % Use the trained CNN for prediction
+        
+        % Display the predicted class label
+        disp(['Predicted Class: ', char(predicted_class)]);  
 
-        % Convert predictions to numeric if Train_Label is numeric
-        predictions_train_numeric = str2double(predictions_train); % Convert predictions to numeric
+        % For performance metrics, you can implement similar logic as before
+        actual_class = input('Enter the actual class index (1 for glioma, 2 for meningioma, 3 for pituitary, 4 for no tumor): ');
 
-        % Calculate confusion matrix
-        confusionMatrix_train = confusionmat(Train_Label, predictions_train_numeric);
-        disp('Training Confusion Matrix:');
-        disp(confusionMatrix_train);
+        % Calculate confusion matrix and performance metrics if needed
+        confusionMatrix_test = confusionmat(actual_class, predicted_class);  % Create confusion matrix
+        disp('Testing Confusion Matrix:');
+        disp(confusionMatrix_test);
 
-        % Calculate accuracy
-        accuracy_train = sum(diag(confusionMatrix_train)) / sum(confusionMatrix_train(:));
-        fprintf('Training Accuracy: %.2f%%\n', accuracy_train * 100);
+        % Calculate performance metrics
+        TP = confusionMatrix_test(1, 1); % True Positives
+        FP = confusionMatrix_test(1, 2) + confusionMatrix_test(1, 3) + confusionMatrix_test(1, 4); % False Positives
+        FN = confusionMatrix_test(2, 1) + confusionMatrix_test(3, 1) + confusionMatrix_test(4, 1); % False Negatives
 
-        % Calculate precision, recall, and F1 score for each class
-        precision_train = zeros(1, length(classLabels));
-        recall_train = zeros(1, length(classLabels));
-        F1_score_train = zeros(1, length(classLabels));
-
-        for i = 1:length(classLabels)
-            TP = confusionMatrix_train(i, i); % True Positives
-            FP = sum(confusionMatrix_train(:, i)) - TP; % False Positives
-            FN = sum(confusionMatrix_train(i, :)) - TP; % False Negatives
-
-            precision_train(i) = TP / (TP + FP + eps); % Precision
-            recall_train(i) = TP / (TP + FN + eps); % Recall
-            F1_score_train(i) = 2 * (precision_train(i) * recall_train(i)) / (precision_train(i) + recall_train(i) + eps); % F1 Score
+        % Accuracy
+        accuracy = sum(diag(confusionMatrix_test)) / sum(confusionMatrix_test(:));
+        
+        % Precision
+        precision = TP / (TP + FP + eps);  % Add epsilon to avoid division by zero
+        
+        % Recall
+        recall = TP / (TP + FN + eps);
+        
+        % F1 Score
+        if (precision + recall) > 0
+            F1_score = 2 * (precision * recall) / (precision + recall);
+        else
+            F1_score = 0; % Avoid division by zero
         end
 
-        % Display metrics for each class
-        for i = 1:length(classLabels)
-            fprintf('Training Class: %s\n', classLabels{i});
-            fprintf('Precision: %.2f%%\n', precision_train(i) * 100);
-            fprintf('Recall: %.2f%%\n', recall_train(i) * 100);
-            fprintf('F1 Score: %.2f%%\n', F1_score_train(i) * 100);
-        end
-    end
-    if choice == 2
-    %% Image Read for Testing
-    [filename, pathname] = uigetfile({'*.*'; '*.bmp'; '*.jpg'; '*.gif'}, 'Pick a Tumor Image File');
-    if isequal(filename, 0) || isequal(pathname, 0)
-        disp('User  canceled the operation.');
-        continue;  % Go back to the menu if no file is selected
-    end
-    
-    I = imread(fullfile(pathname, filename));
-    I = imresize(I, [512, 512]);  % Resize to match training image size
-    figure, imshow(I); title('Query Tumor Image');
-    
-    %% Create Mask or Segmentation Image
-    [I3, RGB] = createMask(I);
-    seg_img = RGB;
-    figure, imshow(I3); title('BW Image');
-    figure, imshow(seg_img); title('Segmented Image');
-    
-    %% Feature Extraction
-    img = rgb2gray(seg_img);
-    
-    % Calculate GLCM and extract features
-    glcms = graycomatrix(img);
-    stats = graycoprops(glcms, 'Contrast Correlation Energy Homogeneity');
-    Contrast = stats.Contrast;
-    Energy = stats.Energy;
-    Homogeneity = stats.Homogeneity;
-
-    % Additional statistical features
-    Mean = mean2(seg_img);
-    Variance = var(double(seg_img(:)));
-    Standard_Deviation = std2(seg_img);
-    Skewness = skewness(double(seg_img(:)));
-    Kurtosis = kurtosis(double(seg_img(:)));
-    
-    % GLCM features
-    Dissimilarity = sum(sum(glcms)) - sum(diag(glcms)); % Dissimilarity
-    
-    % Calculate correlation from GLCM
-    [rows, cols] = size(glcms);
-    mu_x = sum((1:rows) .* sum(glcms, 2)); % Mean of x
-    mu_y = sum((1:cols) .* sum(glcms, 1)); % Mean of y
-    sigma_x = sqrt(sum(((1:rows) - mu_x).^2 .* sum(glcms, 2))); % Standard deviation of x
-    sigma_y = sqrt(sum(((1:cols) - mu_y).^2 .* sum(glcms, 1))); % Standard deviation of y
-    
-    Correlation = (sum(sum((1:rows)' * (1:cols) .* glcms)) - mu_x * mu_y) / (sigma_x * sigma_y); % Correlation
-    ASM = sum(sum(glcms.^2)); % Angular Second Moment
-    Entropy = -sum(glcms(:) .* log(glcms(:) + eps)); % Entropy
-    Coarseness = 1 / (1 + mean2(glcms)); % Coarseness
-
-    % Combine features into a single row for testing
-    test_feat = [Mean, Variance, Standard_Deviation, Skewness, Kurtosis, Contrast, Energy, ASM, Entropy, Homogeneity, Dissimilarity, Correlation, Coarseness];
-
-    % Check if training data is available before classification
-    if isempty(Train_Feat) || isempty(Train_Label)
-        disp('Error: No training data available. Please train the model first.');
-        continue;  % Go back to the menu if no training data
+        % Display performance metrics
+        fprintf('Accuracy: %.2f%%\n', accuracy * 100);
+        fprintf('Precision: %.2f\n', precision);
+        fprintf('Recall: %.2f\n', recall);
+        fprintf('F1 Score: %.2f\n', F1_score);
     end
 
-    % Call the trained model to classify the test features
-    predicted_class = predict(model, test_feat);  % Use the trained model for prediction
-    predicted_class_numeric = str2double(predicted_class);  % Convert to numeric if necessary
-
-    % Display the predicted class label
-    disp(['Predicted Class: ', classLabels{predicted_class_numeric}]);  
-
-    % For performance metrics, we need the actual class label
-    % Assuming you have a way to determine the actual class label for the test image
-    % For example, you could extract it from the filename or have a predefined mapping
-    actual_class = input('Enter the actual class index (1 for glioma, 2 for meningioma, 3 for pituitary, 4 for no tumor): ');
-
-    % Calculate confusion matrix
-    confusionMatrix_test = confusionmat(actual_class, predicted_class_numeric);
-    disp('Testing Confusion Matrix:');
-    disp(confusionMatrix_test);
-
-    % Calculate performance metrics
-    TP = confusionMatrix_test(1, 1); % True Positives
-    FP = confusionMatrix_test(1, 2) + confusionMatrix_test(1, 3) + confusionMatrix_test(1, 4); % False Positives
-    FN = confusionMatrix_test(2, 1) + confusionMatrix_test(3, 1) + confusionMatrix_test(4, 1); % False Negatives
-
-    % Accuracy
-    accuracy = sum(diag(confusionMatrix_test)) / sum(confusionMatrix_test(:));
-    
-    % Precision
-    precision = TP / (TP + FP);
-    
-    % Recall
-    recall = TP / (TP + FN);
-    
-    % F1 Score
-    if (precision + recall) > 0
-        F1_score = 2 * (precision * recall) / (precision + recall);
-    else
-        F1_score = 0; % Avoid division by zero
-    end
-
-    % Display performance metrics
-    fprintf('Accuracy: %.2f%%\n', accuracy * 100);
-    fprintf('Precision: %.2f\n', precision);
-    fprintf('Recall: %.2f\n', recall);
-    fprintf('F1 Score: %.2f\n', F1_score);
-end
-
-if choice == 3
+    if choice == 3
         disp('Exiting the program.');
         break;  % Exit the loop and close the program
     end
