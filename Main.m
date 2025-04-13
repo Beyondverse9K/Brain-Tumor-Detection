@@ -146,104 +146,112 @@ while true
             fprintf('Recall: %.2f%%\n', recall_train(i) * 100);
             fprintf('F1 Score: %.2f%%\n', F1_score_train(i) * 100);
         end
+    end
+    if choice == 2
+    %% Image Read for Testing
+    [filename, pathname] = uigetfile({'*.*'; '*.bmp'; '*.jpg'; '*.gif'}, 'Pick a Tumor Image File');
+    if isequal(filename, 0) || isequal(pathname, 0)
+        disp('User  canceled the operation.');
+        continue;  % Go back to the menu if no file is selected
+    end
+    
+    I = imread(fullfile(pathname, filename));
+    I = imresize(I, [512, 512]);  % Resize to match training image size
+    figure, imshow(I); title('Query Tumor Image');
+    
+    %% Create Mask or Segmentation Image
+    [I3, RGB] = createMask(I);
+    seg_img = RGB;
+    figure, imshow(I3); title('BW Image');
+    figure, imshow(seg_img); title('Segmented Image');
+    
+    %% Feature Extraction
+    img = rgb2gray(seg_img);
+    
+    % Calculate GLCM and extract features
+    glcms = graycomatrix(img);
+    stats = graycoprops(glcms, 'Contrast Correlation Energy Homogeneity');
+    Contrast = stats.Contrast;
+    Energy = stats.Energy;
+    Homogeneity = stats.Homogeneity;
 
-    elseif choice == 2
-        %% Image Read for Testing
-        Test_Feat = [];  % Initialize feature matrix for testing
-        Test_Label = []; % Initialize label vector for testing
-        basePathTest = 'C:/Users/paulj/OneDrive/Documents/GitHub/Brain-Tumor/Testing/';  
+    % Additional statistical features
+    Mean = mean2(seg_img);
+    Variance = var(double(seg_img(:)));
+    Standard_Deviation = std2(seg_img);
+    Skewness = skewness(double(seg_img(:)));
+    Kurtosis = kurtosis(double(seg_img(:)));
+    
+    % GLCM features
+    Dissimilarity = sum(sum(glcms)) - sum(diag(glcms)); % Dissimilarity
+    
+    % Calculate correlation from GLCM
+    [rows, cols] = size(glcms);
+    mu_x = sum((1:rows) .* sum(glcms, 2)); % Mean of x
+    mu_y = sum((1:cols) .* sum(glcms, 1)); % Mean of y
+    sigma_x = sqrt(sum(((1:rows) - mu_x).^2 .* sum(glcms, 2))); % Standard deviation of x
+    sigma_y = sqrt(sum(((1:cols) - mu_y).^2 .* sum(glcms, 1))); % Standard deviation of y
+    
+    Correlation = (sum(sum((1:rows)' * (1:cols) .* glcms)) - mu_x * mu_y) / (sigma_x * sigma_y); % Correlation
+    ASM = sum(sum(glcms.^2)); % Angular Second Moment
+    Entropy = -sum(glcms(:) .* log(glcms(:) + eps)); % Entropy
+    Coarseness = 1 / (1 + mean2(glcms)); % Coarseness
 
-        % Loop through each test image
-        testFiles = dir(fullfile(basePathTest, '*.jpg'));  % Get all jpg files in the testing folder
-        disp(['Found ', num2str(length(testFiles)), ' images in Testing folder.']);  % Debugging statement
+    % Combine features into a single row for testing
+    test_feat = [Mean, Variance, Standard_Deviation, Skewness, Kurtosis, Contrast, Energy, ASM, Entropy, Homogeneity, Dissimilarity, Correlation, Coarseness];
 
-        for k = 1:length(testFiles)
-            filePath = fullfile(basePathTest, testFiles(k).name);  % Full path to the image
-            I = imread(filePath);
-            I = imresize(I, [512, 512]);  % Resize to 512x512
-            
-            % Process the image similarly as in training
-            [I3, RGB] = createMask(I );
-            seg_img = RGB;
-            img = rgb2gray(seg_img);
-            
-            % Feature Extraction for testing
-            glcms = graycomatrix(img);
-            stats = graycoprops(glcms, 'Contrast Correlation Energy Homogeneity');
-            Contrast = stats.Contrast;
-            Energy = stats.Energy;
-            Homogeneity = stats.Homogeneity;
+    % Check if training data is available before classification
+    if isempty(Train_Feat) || isempty(Train_Label)
+        disp('Error: No training data available. Please train the model first.');
+        continue;  % Go back to the menu if no training data
+    end
 
-            % Additional statistical features
-            Mean = mean2(seg_img);
-            Variance = var(double(seg_img(:)));
-            Standard_Deviation = std2(seg_img);
-            Skewness = skewness(double(seg_img(:)));
-            Kurtosis = kurtosis(double(seg_img(:)));
-            
-            % GLCM features
-            Dissimilarity = sum(sum(glcms)) - sum(diag(glcms)); % Dissimilarity
-            
-            % Calculate correlation from GLCM
-            [rows, cols] = size(glcms);
-            mu_x = sum((1:rows) .* sum(glcms, 2)); % Mean of x
-            mu_y = sum((1:cols) .* sum(glcms, 1)); % Mean of y
-            sigma_x = sqrt(sum(((1:rows) - mu_x).^2 .* sum(glcms, 2))); % Standard deviation of x
-            sigma_y = sqrt(sum(((1:cols) - mu_y).^2 .* sum(glcms, 1))); % Standard deviation of y
-            
-            Correlation = (sum(sum((1:rows)' * (1:cols) .* glcms)) - mu_x * mu_y) / (sigma_x * sigma_y); % Correlation
-            ASM = sum(sum(glcms.^2)); % Angular Second Moment
-            Entropy = -sum(glcms(:) .* log(glcms(:) + eps)); % Entropy
-            Coarseness = 1 / (1 + mean2(glcms)); % Coarseness
+    % Call the trained model to classify the test features
+    predicted_class = predict(model, test_feat);  % Use the trained model for prediction
+    predicted_class_numeric = str2double(predicted_class);  % Convert to numeric if necessary
 
-            % Combine features into a single row for testing
-            ff = [Mean, Variance, Standard_Deviation, Skewness, Kurtosis, Contrast, Energy, ASM, Entropy, Homogeneity, Dissimilarity, Correlation, Coarseness];
-            Test_Feat = [Test_Feat; ff];  % Append to the feature matrix for testing
-            Test_Label = [Test_Label; k];  % Assign a temporary label for testing
-        end
+    % Display the predicted class label
+    disp(['Predicted Class: ', classLabels{predicted_class_numeric}]);  
 
-        % Make predictions using the trained model
-        if ~isempty(Test_Feat)
-            predictions = predict(model, Test_Feat);
-            disp('Testing Complete. Predictions made for test images.');
+    % For performance metrics, we need the actual class label
+    % Assuming you have a way to determine the actual class label for the test image
+    % For example, you could extract it from the filename or have a predefined mapping
+    actual_class = input('Enter the actual class index (1 for glioma, 2 for meningioma, 3 for pituitary, 4 for no tumor): ');
 
-            % Calculate performance metrics for testing
-            confusionMatrix_test = confusionmat(Test_Label, predictions);
-            disp('Testing Confusion Matrix:');
-            disp(confusionMatrix_test);
+    % Calculate confusion matrix
+    confusionMatrix_test = confusionmat(actual_class, predicted_class_numeric);
+    disp('Testing Confusion Matrix:');
+    disp(confusionMatrix_test);
 
-            % Calculate accuracy for testing
-            accuracy_test = sum(diag(confusionMatrix_test)) / sum(confusionMatrix_test(:));
-            fprintf('Testing Accuracy: %.2f%%\n', accuracy_test * 100);
+    % Calculate performance metrics
+    TP = confusionMatrix_test(1, 1); % True Positives
+    FP = confusionMatrix_test(1, 2) + confusionMatrix_test(1, 3) + confusionMatrix_test(1, 4); % False Positives
+    FN = confusionMatrix_test(2, 1) + confusionMatrix_test(3, 1) + confusionMatrix_test(4, 1); % False Negatives
 
-            % Calculate precision, recall, and F1 score for each class in testing
-            precision_test = zeros(1, length(classLabels));
-            recall_test = zeros(1, length(classLabels));
-            F1_score_test = zeros(1, length(classLabels));
+    % Accuracy
+    accuracy = sum(diag(confusionMatrix_test)) / sum(confusionMatrix_test(:));
+    
+    % Precision
+    precision = TP / (TP + FP);
+    
+    % Recall
+    recall = TP / (TP + FN);
+    
+    % F1 Score
+    if (precision + recall) > 0
+        F1_score = 2 * (precision * recall) / (precision + recall);
+    else
+        F1_score = 0; % Avoid division by zero
+    end
 
-            for i = 1:length(classLabels)
-                TP = confusionMatrix_test(i, i); % True Positives
-                FP = sum(confusionMatrix_test(:, i)) - TP; % False Positives
-                FN = sum(confusionMatrix_test(i, :)) - TP; % False Negatives
+    % Display performance metrics
+    fprintf('Accuracy: %.2f%%\n', accuracy * 100);
+    fprintf('Precision: %.2f\n', precision);
+    fprintf('Recall: %.2f\n', recall);
+    fprintf('F1 Score: %.2f\n', F1_score);
+end
 
-                precision_test(i) = TP / (TP + FP + eps); % Precision
-                recall_test(i) = TP / (TP + FN + eps); % Recall
-                F1_score_test(i) = 2 * (precision_test(i) * recall_test(i)) / (precision_test(i) + recall_test(i) + eps); % F1 Score
-            end
-
-            % Display metrics for each class in testing
-            for i = 1:length(classLabels)
-                fprintf('Testing Class: %s\n', classLabels{i});
-                fprintf('Precision: %.2f%%\n', precision_test(i) * 100);
-                fprintf('Recall: %.2f%%\n', recall_test(i) * 100);
-                fprintf('F1 Score: %.2f%%\n', F1_score_test(i) * 100);
-            end
-
-        else
-            disp('Error: No test data available. Please ensure that the test images are correctly processed.');
-        end
-
-    elseif choice == 3
+if choice == 3
         disp('Exiting the program.');
         break;  % Exit the loop and close the program
     end
